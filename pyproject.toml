@@ -7,6 +7,7 @@ dependencies = ["mcp>=2.0", "pandas>=2.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+evals = ["anthropic>=0.40"]
 
 [project.scripts]
 finance-mcp = "finance_mcp.server:main"

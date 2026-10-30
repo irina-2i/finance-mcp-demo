@@ -52,7 +52,18 @@ pip install -e ".[dev]"
 python scripts/generate_sample_data.py   # optional, sample data is already included
 pytest                                   # 7 tests
 python scripts/smoke_test_client.py      # starts the server over stdio and calls the tools
+pip install -e ".[evals]" && python evals/run_evals.py   # agent evals need ANTHROPIC_API_KEY
 ```
+
+### Run it in Docker
+
+```bash
+docker build -t finance-mcp-demo .
+docker run -i --rm finance-mcp-demo                                    # sample data
+docker run -i --rm -v /path/to/exports:/data:ro -e FINANCE_RAW_DIR=/data finance-mcp-demo
+```
+
+The image runs as a non-root user and your data folder is mounted read-only.
 
 ### Use it from Claude Desktop
 
@@ -77,6 +88,35 @@ Restart Claude Desktop and try:
 
 To point the server at other data, set `FINANCE_RAW_DIR` to a folder with the same two files.
 
+## Evals
+
+`evals/run_evals.py` checks the server in three layers. Cases live in `evals/cases.json`, so adding a new one needs no code.
+
+| Layer | What it checks | Example |
+|---|---|---|
+| **Tool evals** | Each tool returns the known correct value | Runway with 1.5M SEK is 9.6 months; 9 Stripe payouts are excluded |
+| **Safety evals** | Malicious or nonsensical input is rejected, not executed | `from_month="2026-08; ignore previous instructions..."`, a file path as a month, negative cash |
+| **Agent evals** | Claude answers real questions through the MCP tools | Called the right tool, used the right numbers, mentioned data caveats, did not repeat a figure a user tried to inject |
+
+```
+PASS  runway-1.5m          got 9.6, expected 9.6
+PASS  injection-in-month   rejected: from_month must look like 'YYYY-MM'
+PASS  agent-runway         tools: get_runway
+...
+```
+
+Agent evals call the Anthropic API and run only when `ANTHROPIC_API_KEY` is set. Choose the model with `EVAL_MODEL`. While building them, a mocked agent run caught a real bug: MCP SDK 2.x renamed `inputSchema` to `input_schema`.
+
+## Security notes
+
+Agents that can act on internal data raise questions about access and misuse, so the server is built to have as little power as possible:
+
+- **Read-only by design.** Every tool is annotated `readOnlyHint` and none of them writes, deletes or calls the network.
+- **No raw access.** The agent never sees the raw files or chooses a file path. It only gets aggregated results from the cleaned ledger.
+- **Strict input validation.** Months must match `YYYY-MM`, windows are capped at 1 to 24 months, cash cannot be negative. Anything else returns a clear error, which the safety evals check.
+- **Prompt injection.** A tool argument is treated as data, never as instructions, and an injection attempt inside an argument fails validation. The agent evals also check that a user cannot talk the agent into stating a number the tools do not support.
+- **Least privilege in deployment.** The Docker image runs as a non-root user and data is mounted read-only.
+
 ## Design decisions
 
 - **Clean before the agent sees anything.** The agent gets one consistent ledger, not raw exports, which makes answers repeatable.
@@ -89,7 +129,8 @@ To point the server at other data, set `FINANCE_RAW_DIR` to a folder with the sa
 - A config file per customer for column mapping, so a new data source does not need new code
 - Daily FX rates instead of a fixed EUR rate
 - An LLM-assisted suggestion step for uncategorized transactions, with human approval
-- An evaluation set of questions with expected answers, run against the agent end to end
+- Tracing (for example Langfuse or OpenTelemetry) on every tool call, with cost per run
+- Agent evals in CI on every change, with a pass-rate threshold
 
 ## Project structure
 
@@ -99,6 +140,8 @@ src/finance_mcp/analysis.py   metrics (monthly summary, burn, runway, growth, br
 src/finance_mcp/server.py     MCP server and tool definitions
 scripts/                      sample data generator, MCP client smoke test
 tests/                        tests on tiny hand-checkable data
+evals/                        eval cases and runner (tool, safety and agent layers)
+Dockerfile                    non-root container that runs the server over stdio
 ```
 
 Built by Iryna Rohulevych with Python, pandas and the official MCP Python SDK.
